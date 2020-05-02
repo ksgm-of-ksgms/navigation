@@ -1,5 +1,6 @@
 
 all:
+	hlint .
 	stack build
 
 run:
