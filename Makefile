@@ -1,7 +1,9 @@
 
 all:
-	hlint .
 	stack build
+
+lint:
+	hlint .
 
 run:
 	stack run
