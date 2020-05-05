@@ -2,6 +2,9 @@
 all:
 	stack build
 
+repl:
+	stack repl
+
 lint:
 	hlint .
 
