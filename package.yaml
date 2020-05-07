@@ -30,6 +30,7 @@ dependencies:
 - spatial-math
 - async
 - opencv
+- ad
 
 library:
   source-dirs: src

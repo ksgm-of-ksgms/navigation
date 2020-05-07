@@ -14,33 +14,14 @@ import Linear.V3
 import Linear.V4
 import Linear.Matrix
 import Linear.Metric (dot, norm)
-import Graphics.UI.GLUT ( Key(..), KeyState(..) )
+import Graphics.UI.GLUT ( Key(..), SpecialKey(..), MouseButton(..), KeyState(..) )
 import Vis
 import Vis.Vis ( vis )
-import Vis.Camera ( makeCamera, setCamera, cameraMotion )
-import qualified Vis.GlossColor as GlossColor
+import Vis.Camera ( makeCamera, setCamera, cameraMotion, cameraKeyboardMouse )
 import Control.Lens
---import Debug.Trace
-import Control.Concurrent.Async (Async, async, cancel)
-import Data.IORef
-import OpenCV.HighGui
-import OpenCV.Core.Types.Mat
-import Data.Function (on)
 import Control.Applicative
 import Control.Monad (forever)
-
-mkSlider :: [IORef Double] -> IO (Async ())
-mkSlider refs = async $ do
-    win <- makeWindow "controller"
-    resizeWindow win 300 300
-    createTrackbar win "1" 360 (2*360) $ \v -> writeIORef (refs !! 0) (fromIntegral v / (180.0 / pi) )
-    createTrackbar win "2" 360 (2*360) $ \v -> writeIORef (refs !! 1) (fromIntegral v / (180.0 / pi) )
-    createTrackbar win "3" 360 (2*360) $ \v -> writeIORef (refs !! 2) (fromIntegral v / (180.0 / pi) )
-    createTrackbar win "4" 360 (2*360) $ \v -> writeIORef (refs !! 3) (fromIntegral v / (180.0 / pi) )
-    createTrackbar win "5" 360 (2*360) $ \v -> writeIORef (refs !! 4) (fromIntegral v / (180.0 / pi) )
-    createTrackbar win "6" 360 (2*360) $ \v -> writeIORef (refs !! 5) (fromIntegral v / (180.0 / pi) )
-    imshow win $ eyeMat @Int32 @Int32  @Int32 100 300 3 Depth_8U
-    forever $ waitKey 0
+--import Debug.Trace
 
 
 rotM33XYZ :: (Floating f) => f -> f -> f -> M33 f
@@ -100,8 +81,8 @@ class Renderable b f  | b -> f where
 instance (Floating f) => Renderable (M44 f) f where
     renderFC _ _ m = convfrm m $ axes (0.05, 10)
         where
-        axes (size, aspectRatio) = VisObjects [ Arrow (size, aspectRatio) (V3 1 0 0) (GlossColor.makeColor 1 0 0 1)
-                                              , Arrow (size, aspectRatio) (V3 0 0 1) (GlossColor.makeColor 0 0 1 1)
+        axes (size, aspectRatio) = VisObjects [ Arrow (size, aspectRatio) (V3 1 0 0) red
+                                              , Arrow (size, aspectRatio) (V3 0 0 1) blue
                                               ]
 
 class FrameConvertable b f | b -> f where
@@ -234,48 +215,47 @@ kinematics (e:es) (a:as) = t : ((t !*! ) <$> kinematics es as)
 kinematics [] [] = []
 kinematics _ _ = error "invalid args"
 
-newtype World = World Double
-
-renderUR :: [IORef Double] -> Float -> IO (VisObject Double)
-renderUR refs _ = do
-    jangles <- mapM readIORef refs
-    let frames =  identity : kinematics ur5fts jangles
-    let vframes = render <$> frames
-    let ts     = tail frames ++ [last frames]
-    let links  = zipWith convfrm ts ur5link
-    let colors  = (\b -> if b then red else blue) <$> hasCollisions links
-    let vlinks  = zipWith (renderFC Wireframe) colors links
-    return $ VisObjects $ vlinks ++ vframes
-
-test1 refs _ = do
-    xs <- mapM readIORef refs
-    let rot = rotM33XYZ (xs!!3) (xs!!4) (xs!!5)
-    let t   = V3 (xs!!0) (xs!!1) (xs!!2)
-    let m = identity & _m33 .~ rot & translation .~ t
-    --let obb  = OBB (V3 0.1 0.2 0.3) (V3 0.1 0.2 0.3) identity
-    let obb  = OBB (V3 0 0 0.3) (V3 0.1 0.2 0.3) identity
-    let vobb0 = renderFC Wireframe green $ convfrm m obb
-    let vobb1 = convfrm m $ renderFC Wireframe red obb
-    return $ VisObjects [vobb0, vobb1]
-
-test2 refs _ = do
-    xs <- mapM readIORef refs
-    let obb0 = aabb (-0.10,0.1) (-0.2,0.2) (-0.3,0.3)
-    let obb1 = OBB (V3 0 (xs!!1) (xs!!2)) (V3 0.1 0.2 0.3) (rotM33XYZ (xs!!3) (xs!!4) (xs!!5))
-    let color = if hasIntersection obb0 obb1 then red else blue
-    return $ VisObjects $ render (identity :: M44 Double) : (renderFC Wireframe color <$> [obb0, obb1])
-
-
-someFunc :: IO ()
-someFunc = do
-    refs <- mapM (newIORef @Double) [0, 0, 0, 0, 0, 0]
-    tid <- mkSlider refs
-    --animateIO defaultOpts (test1 refs)
-    animateIO defaultOpts (renderUR refs)
-    cancel tid
-    return ()
-
-
 main = someFunc
 
+mySimulateIO :: IO ()
+mySimulateIO = vis defaultOpts ts (world0, cameraState0) simFun drawFun setCameraFun (Just kmCallback) (Just motionCallback) Nothing
+  where
+    ts = 0.01
+    delta = 0.1
+    world0 = [0, 0, 0, 0, 0, 0]
+    defaultCamera = Camera0 { phi0 = 60 , theta0 = 20 , rho0 = 7 }
+    cameraState0 = makeCamera $ fromMaybe defaultCamera (optInitialCamera defaultOpts)
 
+    simFun ((world, cameraState),time) = return (world, cameraState)
+
+    drawFun ((jangles, _), _) = do
+        let frames =  identity : kinematics ur5fts jangles
+        let vframes = render <$> frames
+        let ts     = tail frames ++ [last frames]
+        let links  = zipWith convfrm ts ur5link
+        let colors  = (\b -> if b then red else blue) <$> hasCollisions links
+        let vlinks  = zipWith (renderFC Wireframe) colors links
+        return (VisObjects $ vlinks ++ vframes, Nothing)
+
+    setCameraFun (_,cameraState) = setCamera cameraState
+
+    kmCallback (world, camState) k0 k1 _ _ = case (k0,  k1) of 
+                         (Char 'j', Down) -> (world & ix 1 %~ (+ delta), camState)
+                         (Char 'k', Down) -> (world & ix 1 %~ (\x -> x - delta), camState)
+                         (Char 'h', Down) -> (world & ix 0 %~ (+ delta), camState)
+                         (Char 'l', Down) -> (world & ix 0 %~ (\x -> x - delta), camState)
+                         (Char 'n', Down) -> (world & ix 2 %~ (+ delta), camState)
+                         (Char 'p', Down) -> (world & ix 2 %~ (\x -> x - delta), camState)
+
+                         (SpecialKey KeyLeft,  Down) -> (world & ix 3 %~ (+ delta), camState)
+                         (SpecialKey KeyRight, Down) -> (world & ix 3 %~ (\x -> x - delta), camState)
+                         (SpecialKey KeyDown,  Down) -> (world & ix 4 %~ (+ delta), camState)
+                         (SpecialKey KeyUp,    Down) -> (world & ix 4 %~ (\x -> x - delta), camState)
+                         (Char ',', Down)            -> (world & ix 5 %~ (+ delta), camState)
+                         (Char '.', Down)            -> (world & ix 5 %~ (\x -> x - delta), camState)
+
+                         (_, _)           -> (world, cameraKeyboardMouse camState k0 k1)
+    motionCallback (world, cameraState) pos = (world, cameraMotion cameraState pos)
+
+someFunc :: IO ()
+someFunc = mySimulateIO
