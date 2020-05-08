@@ -10,17 +10,20 @@ module Lib
 
 import Data.Maybe ( fromMaybe )
 import Data.Int (Int32)
+import Linear.V1
 import Linear.V3
-import Linear.V4
+import Linear.V4 hiding (vector)
 import Linear.Matrix
 import Linear.Metric (dot, norm)
 import Graphics.UI.GLUT ( Key(..), SpecialKey(..), MouseButton(..), KeyState(..) )
 import Vis
 import Vis.Vis ( vis )
-import Vis.Camera ( makeCamera, setCamera, cameraMotion, cameraKeyboardMouse )
+import Vis.Camera ( makeCamera, setCamera, cameraMotion, cameraKeyboardMouse, Camera )
 import Control.Lens
 import Control.Applicative
 import Control.Monad (forever)
+import Numeric.AD
+import Numeric.LinearAlgebra ((#>), det, fromLists, fromList, toList, pinv, inv, vector, matrix, Matrix, norm_2)
 --import Debug.Trace
 
 
@@ -44,6 +47,17 @@ rotM33Z a = V3 (V3 ca (-sa) 0)  (V3 sa ca 0) (V3 0 0 1) where
 
 printV4 :: (Show f) => V4 f -> IO ()
 printV4 (V4 v1 v2 v3 v4) = print [v1, v2, v3, v4]
+
+printV3 :: (Show f) => V3 f -> IO ()
+printV3 (V3 v1 v2 v3) = print [v1, v2, v3]
+
+printM33 :: (Show f) => M33 f -> IO ()
+printM33 (V3 v1 v2 v3) = do
+    putStrLn ""
+    printV3 v1
+    printV3 v2
+    printV3 v3
+    putStrLn ""
 
 printM44 :: (Show f) => M44 f -> IO ()
 printM44 (V4 v1 v2 v3 v4) = do
@@ -71,6 +85,38 @@ twistX d theta = transM44X d !*! rotM44X theta
 
 twistZ :: (Floating f) => f -> f -> M44 f
 twistZ d theta = transM44Z d !*! rotM44Z theta
+
+skew :: (Floating f) => V3 f -> M33 f
+skew (V3 x y z) = V3 (V3 0 (-z) y) (V3 z 0 (-x)) (V3 (-y) x 0)
+
+invSkew :: (Floating f) => M33 f -> V3 f
+invSkew (V3 (V3 _ _ y) (V3 z _ _) (V3 _ x _)) = V3 x y z
+
+rodrigues :: (Eq f, Floating f) => V3 f -> M33 f
+rodrigues r = identity !!* ct  !+! rrt !!* (1 - ct) !+! sr !!* st
+    where
+    theta = norm r
+    ct    = cos theta
+    st    = sin theta
+    r'    = if theta == 0 then V3 1 0 0 else r / V3 theta theta theta
+    sr    = skew r'
+    mrt   = V1 r'
+    mr    = transpose mrt
+    rrt   = mr !*! mrt
+
+invRodrigues :: (Floating f) => M33 f -> V3 f
+invRodrigues m = V3 x' y' z' * V3 t t t
+    where
+    V3 x y z = invSkew (m - transpose m) / 2
+    st = norm (V3 x y z)
+    t  = asin st
+    V3 x' y' z' = V3 x y z / V3 t t t
+
+frame2xyzaxayaz :: (Floating f) => M44 f -> [f]
+frame2xyzaxayaz m = [x, y, z, ax, ay, az]
+    where
+    V3 ax ay az = invRodrigues $ m ^. _m33
+    V3 x y z = m ^. translation
 
 class Renderable b f  | b -> f where
     renderFC :: Flavour -> Color -> b -> VisObject f
@@ -159,23 +205,34 @@ aabb (x0,x1) (y0,y1) (z0,z1) = OBB c b identity
         c = V3 ((x1+x0)/2) ((y1+y0)/2) ((z1+z0)/2)
         b = V3 ((x1-x0)/2) ((y1-y0)/2) ((z1-z0)/2)
 
-type FrameTrans a = a -> M44 a
+type FrameTrans f = f -> M44 f
 
-data DH a = DH {   __a :: a      -- [m]
-               ,   __d :: a      -- [m]
-               ,   __alpha :: a  -- [rad]
+data DH f = DH {   __a :: f      -- [m]
+               ,   __d :: f      -- [m]
+               ,   __alpha :: f  -- [rad]
                } deriving Show
 
 makeLenses ''DH
 
+d1 :: (Floating f) => f
 d1 = 0.089159
+
+a2 :: (Floating f) => f
 a2 = 0.425
+
+a3 :: (Floating f) => f
 a3 = 0.39225
+
+d4 :: (Floating f) => f
 d4 = 0.10915
+
+d5 :: (Floating f) => f
 d5 = 0.09465
+
+d6 :: (Floating f) => f
 d6 = 0.0823
 
-ur5dh :: [DH Double]
+ur5dh :: (Floating f) => [DH f]
 ur5dh =
     [ DH 0             d1          (pi/2) -- J1
     , DH (-a2)         0           0      -- J2
@@ -186,14 +243,14 @@ ur5dh =
     ]
 
 -- how to draw link (from frame{i} to frame{i+1})
-ur5link :: [LinkShape Double]
+ur5link :: (Ord f, Floating f) => [LinkShape f]
 ur5link =
     [ aabb (-r/2, r/2) (-d1, r/2) (-r/2, r/2) -- 1,2
     , aabb (-r/2, a2 + r/2) (-r/2, r/2) (delta+r/2, 3*r/2) -- 2,3
     , aabb (-r/2, a3 + r/2) (-r/2, r/2) (-r/2, r/2) -- 3,4
     , aabb (-r/2, r/2) (r/2 + delta-d4, r/2) (-r/2, r/2) -- 4,5
     , aabb (-r/2, r/2) (-r/2, d5 - r/2 - delta) (-r/2, r/2) -- 5,6
-    , aabb (-r/2, r/2) (-r/2, r/2) (delta-d6+r/2, 0) -- 6,frange
+    , aabb (-r/2, r/2) (-r/2, r/2) (delta-d6+r, 0) -- 6,frange
     , aabb (-r/2, r/2) (-r/2, r/2) (delta, 3*r)  -- tool
     ]
     where
@@ -204,7 +261,7 @@ ur5link =
 dr2ft :: (Floating f) => DH f -> FrameTrans f
 dr2ft dh theta = twistZ (dh ^. _d) theta !*!  twistX (dh^. _a) (dh^. _alpha)
 
-ur5fts :: [FrameTrans Double]
+ur5fts :: (Floating f) => [FrameTrans f]
 ur5fts = dr2ft <$> ur5dh
 
 -- calc each frame in base-coordinate for each joint-angle
@@ -215,47 +272,80 @@ kinematics (e:es) (a:as) = t : ((t !*! ) <$> kinematics es as)
 kinematics [] [] = []
 kinematics _ _ = error "invalid args"
 
-main = someFunc
+joint2tcp :: (Floating f) => [FrameTrans f] -> [f] -> [f]
+joint2tcp es js = frame2xyzaxayaz $ last $ kinematics es js
 
-mySimulateIO :: IO ()
-mySimulateIO = vis defaultOpts ts (world0, cameraState0) simFun drawFun setCameraFun (Just kmCallback) (Just motionCallback) Nothing
-  where
-    ts = 0.01
-    delta = 0.1
-    world0 = [0, 0, 0, 0, 0, 0]
+poslabel = ["x", "y", "z", "ax", "ay", "az"]
+
+
+data World = World { _jPos    :: [Double]
+                   , _tcpVel  :: [Double]
+                   , _trajct   :: [V3 Double]
+                   , _camera :: Camera
+                   }
+
+makeLenses ''World
+
+world0 = World [0.1, 0.4, 0.4, 0.1, 0.1, 0.1] [0, 0, 0, 0, 0, 0] [] cameraState0
+    where
     defaultCamera = Camera0 { phi0 = 60 , theta0 = 20 , rho0 = 7 }
     cameraState0 = makeCamera $ fromMaybe defaultCamera (optInitialCamera defaultOpts)
 
-    simFun ((world, cameraState),time) = return (world, cameraState)
+mySimulateIO :: IO ()
+mySimulateIO = vis defaultOpts 0.016 world0 simFun drawFun setCameraFun (Just kmCallback) (Just motionCallback) Nothing
+  where
+    delta = 0.001
 
-    drawFun ((jangles, _), _) = do
-        let frames =  identity : kinematics ur5fts jangles
+    simFun (w,t) = return $ w  &~ do
+                        let tcpv = w ^. tcpVel
+                        let tcpv' = zipWith (+) tcpv  [0, 0, 0, 0, 0, 0]
+                        let j    = fromLists (jacobian (joint2tcp ur5fts) (w ^. jPos) :: [[Double]])
+                        let jvel = if det j > 0.0001 then toList $ pinv j #> fromList tcpv else [0, 0, 0, 0, 0, 0]
+                        let jpos' = zipWith (+) (w ^. jPos) jvel
+                        let pos  = joint2tcp ur5fts jpos'
+                        jPos .= jpos'
+                        tcpVel .= tcpv'
+                        trajct %= (:) (V3 (pos !! 0) (pos !! 1) (pos !! 2))
+
+    drawFun (w, t) = do
+        let jpos = w ^. jPos
+        let frames =  identity : kinematics ur5fts jpos
         let vframes = render <$> frames
         let ts     = tail frames ++ [last frames]
         let links  = zipWith convfrm ts ur5link
         let colors  = (\b -> if b then red else blue) <$> hasCollisions links
         let vlinks  = zipWith (renderFC Wireframe) colors links
-        return (VisObjects $ vlinks ++ vframes, Nothing)
+        let pos = joint2tcp ur5fts jpos
+        let info = [Text2d (show (l, j)) (0, 110  - i * 20) Fixed8By13 red | (l, i,j) <- zip3 poslabel [0..] pos]
+        let infoj = [Text2d (show ("J", i, j)) (300, 110  - i * 20) Fixed8By13 red | (i,j) <- zip [0..] jpos]
+        let points = Points (w ^. trajct) (Just 1.0) yellow
+        --printM44 $ last frames
+        return (VisObjects $ vlinks ++ vframes ++ info ++ infoj ++ [points], Nothing)
 
-    setCameraFun (_,cameraState) = setCamera cameraState
+    setCameraFun w = setCamera $ w ^. camera
 
-    kmCallback (world, camState) k0 k1 _ _ = case (k0,  k1) of 
-                         (Char 'j', Down) -> (world & ix 1 %~ (+ delta), camState)
-                         (Char 'k', Down) -> (world & ix 1 %~ (\x -> x - delta), camState)
-                         (Char 'h', Down) -> (world & ix 0 %~ (+ delta), camState)
-                         (Char 'l', Down) -> (world & ix 0 %~ (\x -> x - delta), camState)
-                         (Char 'n', Down) -> (world & ix 2 %~ (+ delta), camState)
-                         (Char 'p', Down) -> (world & ix 2 %~ (\x -> x - delta), camState)
+    kmCallback w k0 k1 _ _ = case (k0,  k1) of 
+                         (Char 'h', Down)            -> w & tcpVel .~ [ delta, 0, 0, 0, 0, 0]
+                         (Char 'l', Down)            -> w & tcpVel .~ [-delta, 0, 0, 0, 0, 0]
+                         (Char 'j', Down)            -> w & tcpVel .~ [0,  delta, 0, 0, 0, 0]
+                         (Char 'k', Down)            -> w & tcpVel .~ [0, -delta, 0, 0, 0, 0]
+                         (Char 'n', Down)            -> w & tcpVel .~ [0, 0,  delta, 0, 0, 0]
+                         (Char 'p', Down)            -> w & tcpVel .~ [0, 0, -delta, 0, 0, 0]
+                         (SpecialKey KeyLeft,  Down) -> w & tcpVel .~ [0, 0, 0,  delta, 0, 0]
+                         (SpecialKey KeyRight, Down) -> w & tcpVel .~ [0, 0, 0, -delta, 0, 0]
+                         (SpecialKey KeyDown,  Down) -> w & tcpVel .~ [0, 0, 0, 0,  delta, 0]
+                         (SpecialKey KeyUp,    Down) -> w & tcpVel .~ [0, 0, 0, 0, -delta, 0]
+                         (Char ',', Down)            -> w & tcpVel .~ [0, 0, 0, 0, 0,  delta]
+                         (Char '.', Down)            -> w & tcpVel .~ [0, 0, 0, 0, 0, -delta]
+                         (Char 'a', Down)            -> world0 & camera .~ (w ^. camera)
+                         (Char 's', Down)            -> w & tcpVel .~ [0, 0, 0, 0, 0, 0]
+                         (_, _)           -> w & camera %~ (\x -> cameraKeyboardMouse x k0 k1)
 
-                         (SpecialKey KeyLeft,  Down) -> (world & ix 3 %~ (+ delta), camState)
-                         (SpecialKey KeyRight, Down) -> (world & ix 3 %~ (\x -> x - delta), camState)
-                         (SpecialKey KeyDown,  Down) -> (world & ix 4 %~ (+ delta), camState)
-                         (SpecialKey KeyUp,    Down) -> (world & ix 4 %~ (\x -> x - delta), camState)
-                         (Char ',', Down)            -> (world & ix 5 %~ (+ delta), camState)
-                         (Char '.', Down)            -> (world & ix 5 %~ (\x -> x - delta), camState)
 
-                         (_, _)           -> (world, cameraKeyboardMouse camState k0 k1)
-    motionCallback (world, cameraState) pos = (world, cameraMotion cameraState pos)
+    motionCallback w pos = w & camera %~ (`cameraMotion` pos)
 
 someFunc :: IO ()
 someFunc = mySimulateIO
+
+main = mySimulateIO
+

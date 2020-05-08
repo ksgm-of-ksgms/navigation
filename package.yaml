@@ -31,6 +31,7 @@ dependencies:
 - async
 - opencv
 - ad
+- hmatrix
 
 library:
   source-dirs: src
