@@ -242,6 +242,9 @@ ur5dh =
     , DH 0             d6          0      -- J6(flange)
     ]
 
+tcpOffsetZ :: (Floating f) => f
+tcpOffsetZ = 0.15
+
 -- how to draw link (from frame{i} to frame{i+1})
 ur5link :: (Ord f, Floating f) => [LinkShape f]
 ur5link =
@@ -251,7 +254,7 @@ ur5link =
     , aabb (-r/2, r/2) (r/2 + delta-d4, r/2) (-r/2, r/2) -- 4,5
     , aabb (-r/2, r/2) (-r/2, d5 - r/2 - delta) (-r/2, r/2) -- 5,6
     , aabb (-r/2, r/2) (-r/2, r/2) (delta-d6+r, 0) -- 6,frange
-    , aabb (-r/2, r/2) (-r/2, r/2) (delta, 3*r)  -- tool
+    , aabb (-r/2, r/2) (-r/2, r/2) (delta, tcpOffsetZ)  -- tool
     ]
     where
     r = 0.05
@@ -262,7 +265,7 @@ dr2ft :: (Floating f) => DH f -> FrameTrans f
 dr2ft dh theta = twistZ (dh ^. _d) theta !*!  twistX (dh^. _a) (dh^. _alpha)
 
 ur5fts :: (Floating f) => [FrameTrans f]
-ur5fts = dr2ft <$> ur5dh
+ur5fts = (dr2ft <$> ur5dh)
 
 -- calc each frame in base-coordinate for each joint-angle
 kinematics :: (Floating f) => [FrameTrans f] -> [f] -> [M44 f]
@@ -273,7 +276,7 @@ kinematics [] [] = []
 kinematics _ _ = error "invalid args"
 
 joint2tcp :: (Floating f) => [FrameTrans f] -> [f] -> [f]
-joint2tcp es js = frame2xyzaxayaz $ last $ kinematics es js
+joint2tcp es js = frame2xyzaxayaz $ last ( kinematics es js) !*! transM44Z tcpOffsetZ
 
 poslabel = ["x", "y", "z", "ax", "ay", "az"]
 
@@ -299,7 +302,7 @@ mySimulateIO = vis defaultOpts 0.016 world0 simFun drawFun setCameraFun (Just km
     simFun (w,t) = return $ w  &~ do
                         let tcpv = w ^. tcpVel
                         let tcpv' = zipWith (+) tcpv  [0, 0, 0, 0, 0, 0]
-                        let j    = fromLists (jacobian (joint2tcp ur5fts) (w ^. jPos) :: [[Double]])
+                        let j    = fromLists (jacobian (joint2tcp $ ur5fts) (w ^. jPos) :: [[Double]])
                         let jvel = if det j > 0.0001 then toList $ pinv j #> fromList tcpv else [0, 0, 0, 0, 0, 0]
                         let jpos' = zipWith (+) (w ^. jPos) jvel
                         let pos  = joint2tcp ur5fts jpos'
